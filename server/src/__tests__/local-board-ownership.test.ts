@@ -3,7 +3,7 @@ import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog, agents, authUsers, companies, companyMemberships, companySecrets,
-  connectionGrants, createDb, heartbeatRuns, instanceUserRoles, issues,
+  connectionGrants, createDb, heartbeatRuns, instanceUserRoles, issueComments, issues,
   routineRevisions, routines, toolApplications, toolConnectionInstalls, toolConnections, userSecretDefinitions,
 } from "@paperclipai/db";
 import {
@@ -89,7 +89,7 @@ describePostgres("local-board ownership migration", () => {
     const [run] = await db.insert(heartbeatRuns).values({
       companyId, agentId: agent!.id, invocationSource: "on_demand", status: "succeeded", responsibleUserId: "local-board",
     }).returning();
-    return { companyId, issue: issue!, humanTask: humanTask!, routine: routine!, revision: revision!,
+    return { companyId, agentId: agent!.id, issue: issue!, humanTask: humanTask!, routine: routine!, revision: revision!,
       secret: secret!, application: application!, connection: connection!, grant: grant!, run: run! };
   }
 
@@ -103,6 +103,65 @@ describePostgres("local-board ownership migration", () => {
     const url = new URL(getBoardClaimWarningUrl("127.0.0.1", 3100)!);
     return { token: url.pathname.split("/").pop()!, code: url.searchParams.get("code")! };
   }
+
+  async function chat(companyId: string, agentId: string, userId: string) {
+    const [row] = await db.insert(issues).values({
+      companyId, title: "Chat with worker", conversationAgentId: agentId, conversationUserId: userId,
+      conversationState: "waiting", status: "in_review", assigneeAgentId: agentId,
+      responsibleUserId: userId, createdByUserId: userId,
+    }).returning();
+    return row!;
+  }
+
+  async function migrate(companyId: string, userId: string, mode: "claim" | "repair") {
+    if (mode === "repair") {
+      await owner(companyId, userId);
+      await db.insert(instanceUserRoles).values({ userId, role: "instance_admin" });
+    } else {
+      await db.insert(instanceUserRoles).values({ userId: "local-board", role: "instance_admin" });
+    }
+    await initializeBoardClaimChallenge(db, { deploymentMode: "authenticated" });
+    if (mode === "claim") {
+      await expect(claimBoardOwnership(db, { ...challenge(), userId })).resolves.toMatchObject({ status: "claimed" });
+    }
+  }
+
+  it.each(["claim", "repair"] as const)("transfers existing chat ownership during %s", async (mode) => {
+    const { issueService } = await import("../services/issues.js");
+    const userId = await user();
+    const f = await legacyCompany();
+    const legacy = await chat(f.companyId, f.agentId, "local-board");
+    await db.insert(issueComments).values({ companyId: f.companyId, issueId: legacy.id, authorUserId: "local-board", body: "Saved history" });
+    await migrate(f.companyId, userId, mode);
+    const saved = await issueService(db).getConversation(f.companyId, f.agentId, userId);
+    expect(saved).toMatchObject({ id: legacy.id, conversationUserId: userId, responsibleUserId: userId });
+    expect(await issueService(db).listConversations(f.companyId, userId)).toMatchObject([{ id: legacy.id }]);
+    expect((await db.select().from(issueComments))[0]).toMatchObject({ issueId: legacy.id, authorUserId: "local-board", body: "Saved history" });
+  });
+
+  it.each(["claim", "repair"] as const)("retains conflicting legacy chat history as a private task during %s", async (mode) => {
+    const { issueService } = await import("../services/issues.js");
+    const { canActorReadIssuePrivacy } = await import("../services/authorization.js");
+    const userId = await user();
+    const outsiderId = await user();
+    const f = await legacyCompany();
+    await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: outsiderId, status: "active", membershipRole: "operator" });
+    const legacy = await chat(f.companyId, f.agentId, "local-board");
+    const personal = await chat(f.companyId, f.agentId, userId);
+    const [message] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: legacy.id, authorUserId: "local-board", body: "Legacy private history" }).returning();
+    await migrate(f.companyId, userId, mode);
+    expect((await db.select().from(issues).where(eq(issues.id, personal.id)))[0]).toEqual(personal);
+    const [history] = await db.select().from(issues).where(eq(issues.id, legacy.id));
+    expect(history).toMatchObject({ conversationAgentId: null, conversationUserId: null, conversationState: null,
+      visibility: "private", privacyRootIssueId: legacy.id, responsibleUserId: userId, assigneeAgentId: f.agentId });
+    expect((await db.select().from(issueComments).where(eq(issueComments.id, message!.id)))[0]).toEqual(message);
+    const actor = (id: string) => ({ type: "board" as const, userId: id, source: "session" as const, companyIds: [f.companyId] });
+    expect(await canActorReadIssuePrivacy(db, actor(userId), history!)).toBe(true);
+    expect(await canActorReadIssuePrivacy(db, actor(outsiderId), history!)).toBe(false);
+    expect(await issueService(db).listConversations(f.companyId, userId)).toMatchObject([{ id: personal.id }]);
+    await initializeBoardClaimChallenge(db, { deploymentMode: "authenticated" });
+    expect(await db.select().from(activityLog)).toHaveLength(1);
+  });
 
   async function expectTransferred(f: Awaited<ReturnType<typeof legacyCompany>>, userId: string) {
     expect((await db.select().from(companies).where(eq(companies.id, f.companyId)))[0]?.defaultResponsibleUserId).toBe(userId);

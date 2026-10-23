@@ -28,6 +28,8 @@ Open `/auth`; first-owner bootstrap uses `/board-claim/:token` when configured.
 Claiming an existing local-trusted instance transfers its work and connection
 ownership to the signed-in operator. Authenticated startup repairs older claims
 only for a sole administrator with active company owner membership.
+Chats transfer too. If a personal chat already exists for the agent, its legacy
+history remains available through the original private task link.
 
 ### `invite-members`
 

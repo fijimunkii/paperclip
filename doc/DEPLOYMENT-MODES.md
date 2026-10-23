@@ -185,6 +185,10 @@ access to a secret it cannot use.
 The ownership transfer commits with the admin claim and writes a company activity
 entry. Historical authors and admitted run identities retain their original
 attribution. New routine executions use the transferred responsible person.
+Existing chats also transfer to the claimant. If the claimant already has a chat
+with the same agent, that personal chat remains current. The legacy chat retains
+its messages and original task link as a private task accessible to the claimant
+and assigned agent.
 
 On authenticated startup, older incomplete claims are repaired when there is
 exactly one non-local administrator, with an existing user account and active

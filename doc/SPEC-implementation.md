@@ -804,6 +804,9 @@ credentials take precedence, revocations remain in effect, and historical run
 identities and authors are preserved. Authenticated startup repairs older claims
 only for a sole non-local administrator with an existing user account and active
 owner membership in the affected company. See [deployment modes](DEPLOYMENT-MODES.md#7-local-trusted---authenticated-claim-flow).
+Chat ownership transfers too. An existing personal chat for the same agent stays
+current; conflicting legacy chat history remains at its original task ID as a
+private task granted to the claimant and assigned agent.
 
 Human invitations default to the Operator role. Its default grants allow agent
 creation and configuration, skill editing, environment management, invitations,

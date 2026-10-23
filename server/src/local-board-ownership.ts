@@ -1,11 +1,11 @@
-import { and, eq, or, sql } from "drizzle-orm";
+import { and, eq, isNotNull, or, sql } from "drizzle-orm";
 import {
-  activityLog, companies, companySecrets, connectionGrants, issues, routineRevisions,
+  activityLog, companies, companySecrets, connectionGrants, issueAccessGrants, issues, routineRevisions,
   routines, toolApplications, toolConnections, type Db,
 } from "@paperclipai/db";
 
 export const LOCAL_BOARD_USER_ID = "local-board";
-type OwnershipTransaction = Pick<Db, "update" | "insert">;
+type OwnershipTransaction = Pick<Db, "select" | "update" | "insert" | "execute">;
 
 export async function transferLocalBoardOwnership(
   tx: OwnershipTransaction,
@@ -15,6 +15,7 @@ export async function transferLocalBoardOwnership(
   if (userId === LOCAL_BOARD_USER_ID) return;
   const now = new Date();
   const counts: Record<string, number> = {};
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${companyId}`}, 0))`);
 
   counts.companyDefaults = (await tx.update(companies)
     .set({ defaultResponsibleUserId: userId, updatedAt: now })
@@ -28,6 +29,30 @@ export async function transferLocalBoardOwnership(
     .set({ assigneeUserId: userId, updatedAt: now })
     .where(and(eq(issues.companyId, companyId), eq(issues.assigneeUserId, LOCAL_BOARD_USER_ID)))
     .returning({ id: issues.id })).length;
+  const legacyChats = await tx.select({ id: issues.id, agentId: issues.conversationAgentId })
+    .from(issues).where(and(eq(issues.companyId, companyId),
+      eq(issues.conversationUserId, LOCAL_BOARD_USER_ID), isNotNull(issues.conversationAgentId)));
+  counts.conversations = 0;
+  counts.chatHistories = 0;
+  for (const chat of legacyChats) {
+    const [personal] = await tx.select({ id: issues.id }).from(issues).where(and(
+      eq(issues.companyId, companyId), eq(issues.conversationAgentId, chat.agentId!), eq(issues.conversationUserId, userId),
+    ));
+    if (personal) {
+      await tx.update(issues).set({ conversationAgentId: null, conversationUserId: null, conversationState: null,
+        visibility: "private", privacyRootIssueId: chat.id, privacyParentIssueId: null, updatedAt: now,
+      }).where(and(eq(issues.companyId, companyId), eq(issues.id, chat.id)));
+      await tx.insert(issueAccessGrants).values([
+        { issueId: chat.id, subjectType: "user", subjectId: userId, source: "explicit", grantedByUserId: userId },
+        { issueId: chat.id, subjectType: "agent", subjectId: chat.agentId!, source: "assignment", grantedByUserId: userId },
+      ]);
+      counts.chatHistories += 1;
+    } else {
+      await tx.update(issues).set({ conversationUserId: userId, updatedAt: now })
+        .where(and(eq(issues.companyId, companyId), eq(issues.id, chat.id)));
+      counts.conversations += 1;
+    }
+  }
   counts.routines = (await tx.update(routines)
     .set({ responsibleUserId: userId, updatedAt: now })
     .where(and(eq(routines.companyId, companyId), eq(routines.responsibleUserId, LOCAL_BOARD_USER_ID)))
