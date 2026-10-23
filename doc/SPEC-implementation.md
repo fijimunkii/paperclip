@@ -796,6 +796,15 @@ conversation lifecycles, and protection against replaying superseded requests.
 - Board has full read/write across all companies in deployment
 - Every board mutation writes to `activity_log`
 
+Claiming an authenticated instance previously owned by `local-board` atomically
+transfers operational ownership with admin authority and company owner membership.
+This includes company defaults, task responsibility/assignments, routine revision
+responsibility, and personal secret/connection ownership. Existing personal
+credentials take precedence, revocations remain in effect, and historical run
+identities and authors are preserved. Authenticated startup repairs older claims
+only for a sole non-local administrator with an existing user account and active
+owner membership in the affected company. See [deployment modes](DEPLOYMENT-MODES.md#7-local-trusted---authenticated-claim-flow).
+
 Human invitations default to the Operator role. Its default grants allow agent
 creation and configuration, skill editing, environment management, invitations,
 task assignment, connection and tool management/use, and tool
